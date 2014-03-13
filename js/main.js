@@ -73,10 +73,15 @@ SuggestionView = Backbone.View.extend({
   },
 
   render: function() {
-    var artistSuggestions = this.options.suggestedArtistNames.join(', ');
+
+    var artistSuggestions = _.map(this.options.suggestedArtistNames, function(name) {
+      nameEncoded = encodeURIComponent(name)
+      return '<a href="http://schedule.sxsw.com/search?conferences%5B%5D=music&q='
+        + nameEncoded + '">' + name + '</a>';
+    })
     this.$el.html(this.template({
         'name': this.model.get('name'),
-        'artistSuggestions': artistSuggestions
+        'artistSuggestions': artistSuggestions.join(', ')
     }));
 
     return this;
