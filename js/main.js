@@ -27,15 +27,110 @@ _.rateLimit = function(func, rate, async) {
   };
 };
 
-var getSimilarBands = function(bandName, callback) {
-  var bandNameEscaped = encodeURIComponent(bandName)
-  var requestUrl = 'http://api.musicgraph.com/api/v1/artist/search?api_key=a1c31a4eb0f2b5f1224ead8794c0de24&similar_to=' + bandNameEscaped;
-  $.getJSON(requestUrl, function(x) {
-    similarBands = _.pluck(x.data, 'name');
-    similarBandsLowecase = _.map(similarBands, function(name) { return name.toLowerCase() });
-    callback(similarBandsLowecase);
-  });
-};
+Artist = Backbone.Model.extend({
+  updateSimilarArtists: function() {
+    var that = this;
+    var nameEsacped = encodeURIComponent(this.get('name'))
+    var requestUrl = 'http://api.musicgraph.com/api/v1/artist/search?api_key=a1c31a4eb0f2b5f1224ead8794c0de24&similar_to=' + nameEsacped;
+
+    $.getJSON(requestUrl, function(x) {
+      similarBands = _.pluck(x.data, 'name');
+      similarBandsLowecase = _.map(similarBands, function(name) { return name.toLowerCase() });
+      that.set('similarArtists', similarBandsLowecase);
+    });
+  },
+
+  getSimilarArtistsIntersection: function(artistNames) {
+    return _.intersection(artistNames, this.get('similarArtists'));
+  }
+});
+
+
+ArtistCollection = Backbone.Collection.extend({
+  model: Artist,
+
+  getArtistNames: function() {
+    return this.pluck('name');
+  },
+
+  updateSimilarArtists: function() {
+    var getSimilarBandNamesRateLimited = _.rateLimit(function(artist) {
+      artist.updateSimilarArtists()
+    }, 500);
+
+    this.each(getSimilarBandNamesRateLimited);
+  }
+});
+
+SuggestionView = Backbone.View.extend({
+  tagName: 'div',
+
+  template: _.template($('#suggestion-template').html()),
+
+  initialize: function(options) {
+    this.options = options;
+    this.listenTo(this.model, 'change:similarArtists', this.render);
+  },
+
+  render: function() {
+    var artistSuggestions = this.options.suggestedArtistNames.join(', ');
+    this.$el.html(this.template({
+        'name': this.model.get('name'),
+        'artistSuggestions': artistSuggestions
+    }));
+
+    return this;
+  }
+});
+
+SuggestionListView = Backbone.View.extend({
+  el: '#the-list',
+
+  collection: null,
+
+  sxswBands: null,
+
+  initialize: function() {
+    this.listenTo(this.collection, 'change:similarArtists', this.addOne);
+  },
+
+  addOne: function(artist, collection, options) {
+      artistName = artist.get('name');
+      similarArtistsAtSXSW = artist.getSimilarArtistsIntersection(sxswBands);
+
+      console.log(artistName, similarArtistsAtSXSW);
+
+      if (similarArtistsAtSXSW.length > 0) {
+        var suggestionView = new SuggestionView({
+          model: artist,
+          suggestedArtistNames: similarArtistsAtSXSW
+        })
+        $(this.el).prepend(suggestionView.render().el);
+      }
+  },
+
+  render: function() {
+    var that = this;
+    $(this.el).empty();
+    this.collection.each(function(artist) {
+      var suggestionView = new SuggestionView({
+        model: artist
+      })
+      $(this.el).prepend(suggestionView.render().el);
+    })
+  }
+})
+
+var sxswBands = _.map(bandsAndUrls, function(band) {
+  return band['name'].toLowerCase()
+});
+
+artistCollection = new ArtistCollection();
+suggestionListView = new SuggestionListView({
+  collection: artistCollection,
+  sxswBands: sxswBands
+});
+suggestionListView.render();
 
 var main = function() {
   if (!rdioUtils.startupChecks()) {
@@ -54,37 +149,22 @@ var main = function() {
       },
       onLoadComplete: function() {
         // Called when the initial load is complete.
-        var sxswBands = _.map(bandsAndUrls, function(band) {
-          return band['name'].toLowerCase()
-        });
 
-        var myBands = {};
+        var myArtists = [];
+        var foundArtists = {}
         collection.each(function(album) {
-          myBands[album.artistKey] = album.artist;
+          if(_.has(foundArtists, album.artistKey)) {
+            return
+          }
+
+          foundArtists[album.artistKey] = true;
+          myArtists.push({
+            'name': album.artist.toLowerCase(),
+            'key': album.artistKey
+          });
         });
-        // console.log('myBands', myBands);
-
-        myBandNames = _.map(myBands, function(x) { return x.toLowerCase(); });
-        // console.log('myBandNames', myBandNames);
-
-        myBandsAtSXSW = _.intersection(sxswBands, myBandNames);
-        console.log('myBandsAtSXSW', myBandsAtSXSW);
-
-        var similarBands = {};
-
-        var getSimilarBandNames = function(bandName) {
-          getSimilarBands(bandName, function(foundBands) {
-            similarBandsAtSXSW = _.intersection(sxswBands, foundBands)
-            similarBands[bandName] = similarBandsAtSXSW;
-            if (similarBandsAtSXSW.length > 0) {
-              $('#the-list').append('<li>' + bandName + ' - ' + similarBandsAtSXSW.join(', ') + '</li>');
-            }
-            console.log(bandName, similarBandsAtSXSW);
-          })
-        }
-        var getSimilarBandNamesRateLimited = _.rateLimit(getSimilarBandNames, 1000);
-
-        _.map(myBandNames, getSimilarBandNamesRateLimited);
+        artistCollection.add(myArtists);
+        artistCollection.updateSimilarArtists();
       },
       onError: function(message) {
         // Called with any loading errors.
